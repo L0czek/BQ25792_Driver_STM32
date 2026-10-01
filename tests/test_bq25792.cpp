@@ -7,9 +7,8 @@
 // This is namespace-specific to avoid duplicate definitions
 #include "bq25792_expected.hpp"
 
-// Include STM32 HAL first to get proper type definitions
-#include "stm32g4xx_hal.h"
-#include "stm32g4xx_hal_i2c.h"
+// Include mock HAL for unit tests
+#include "mock_hal.h"
 
 // Include BQ25792 driver
 #include "bq25792.hpp"

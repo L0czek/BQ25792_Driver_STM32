@@ -13,9 +13,14 @@
 // This is namespace-specific to avoid duplicate definitions
 #include "bq25792_expected.hpp"
 
-// HAL includes
+// HAL includes (skip in unit test mode)
+#ifndef BQ25792_UNIT_TEST
 #include "stm32g4xx_hal.h"
 #include "stm32g4xx_hal_i2c.h"
+#else
+// Unit test mode: include mock HAL for type definitions
+#include "mock_hal.h"
+#endif
 
 // BQ25792 configuration
 #ifndef BQ25792_I2C_ADDRESS
