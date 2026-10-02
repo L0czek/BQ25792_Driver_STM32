@@ -241,25 +241,22 @@ bq25792::expected<float> Charger::get_vsys_min() const {
         return result.error();
     }
 
+    // Mask only bits 5-0 (bits 7-6 are reserved per datasheet)
     uint8_t reg_value = result.value() & BQ25792_VSYS_MIN_MASK;
-    float voltage = (reg_value * BQ25792_VSYS_MIN_STEP_SIZE) + BQ25792_VSYS_MIN_FIXED_OFFSET;
-    return voltage / 1000.0f;  // Convert to volts
+    // Datasheet: Fixed Offset = 2500mV, Step Size = 250mV
+    // Code = (V - 2500) / 250, so V = Code * 250 + 2500
+    float voltage_mv = (static_cast<float>(reg_value) * BQ25792_VSYS_MIN_STEP_SIZE) + BQ25792_VSYS_MIN_FIXED_OFFSET;
+    return voltage_mv / 1000.0f;  // Convert to volts
 }
 
 bq25792::expected<void> Charger::set_vsys_min(float voltage) {
-    // Validate voltage (must be 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, or 10.5)
-    const float valid_voltages[] = {3.5f, 4.5f, 5.5f, 6.5f, 7.5f, 8.5f, 9.5f, 10.5f};
-    bool valid = false;
-    for (float v : valid_voltages) {
-        if (std::abs(v - voltage) < 0.01f) {
-            valid = true;
-            break;
-        }
-    }
-    if (!valid) {
+    // Validate voltage range: 2.5V to 16.0V in 250mV steps per datasheet
+    // Code = (V - 2500) / 250, so valid range is 0-51 (6 bits)
+    if (voltage < 2.5f || voltage > 16.0f) {
         return make_error_code(ErrorCode::InvalidParameter);
     }
 
+    // Calculate register value and verify it fits in 6 bits (0-51)
     uint16_t reg_value = static_cast<uint16_t>((voltage * 1000.0f - BQ25792_VSYS_MIN_FIXED_OFFSET) / BQ25792_VSYS_MIN_STEP_SIZE);
     if (reg_value > BQ25792_VSYS_MIN_MASK) {
         return make_error_code(ErrorCode::InvalidParameter);
@@ -288,12 +285,12 @@ bq25792::expected<float> Charger::get_charge_voltage_limit() const {
 }
 
 bq25792::expected<void> Charger::set_charge_voltage_limit(float voltage) {
-    // Validate voltage range (3.5V to 19.2V)
-    if (voltage < 3.5f || voltage > 19.2f) {
+    // Validate voltage range: 3.0V to 18.8V per datasheet (11 bits, 10mV steps)
+    if (voltage < 3.0f || voltage > 18.8f) {
         return make_error_code(ErrorCode::InvalidParameter);
     }
 
-    uint16_t raw_value = static_cast<uint16_t>(voltage * 100.0f);
+    uint16_t raw_value = static_cast<uint16_t>(voltage * 100.0f);  // Convert to 10mV units
     return write_word(BQ25792_REG_CHARGE_VOLTAGE_LIMIT, raw_value);
 }
 
@@ -309,12 +306,17 @@ bq25792::expected<float> Charger::get_charge_current_limit() const {
 }
 
 bq25792::expected<void> Charger::set_charge_current_limit(float current) {
-    // Validate current range (0A to 12.79A)
-    if (current < 0.0f || current > 12.79f) {
+    // Validate current range: 50mA to 5000mA per datasheet (9 bits, 10mA steps)
+    // Range: 50mA-5000mA, Bit Step Size = 10mA
+    if (current < 0.05f || current > 5.0f) {
         return make_error_code(ErrorCode::InvalidParameter);
     }
 
-    uint16_t raw_value = static_cast<uint16_t>(current * 100.0f);
+    uint16_t raw_value = static_cast<uint16_t>(current * 100.0f);  // Convert to 10mA units
+    if (raw_value > 0x1FF) {  // 9 bits max = 511 (5110mA)
+        return make_error_code(ErrorCode::InvalidParameter);
+    }
+
     return write_word(BQ25792_REG_CHARGE_CURRENT_LIMIT, raw_value);
 }
 
@@ -328,8 +330,9 @@ bq25792::expected<float> Charger::get_input_voltage_limit() const {
 }
 
 bq25792::expected<void> Charger::set_input_voltage_limit(float voltage) {
-    // Validate voltage range (3.9V to 25.5V)
-    if (voltage < 3.9f || voltage > 25.5f) {
+    // Validate voltage range: 3.6V to 22.0V per datasheet (8 bits, 100mV steps)
+    // Range: 3600mV-22000mV, Bit Step Size = 100mV
+    if (voltage < 3.6f || voltage > 22.0f) {
         return make_error_code(ErrorCode::InvalidParameter);
     }
 
@@ -349,12 +352,17 @@ bq25792::expected<float> Charger::get_input_current_limit() const {
 }
 
 bq25792::expected<void> Charger::set_input_current_limit(float current) {
-    // Validate current range (0A to 12.79A)
-    if (current < 0.0f || current > 12.79f) {
+    // Validate current range: 100mA to 3300mA per datasheet (9 bits, 10mA steps)
+    // Range: 100mA-3300mA, Bit Step Size = 10mA
+    if (current < 0.1f || current > 3.3f) {
         return make_error_code(ErrorCode::InvalidParameter);
     }
 
     uint16_t raw_value = static_cast<uint16_t>(current * 100.0f);
+    if (raw_value > 0x1FF) {  // 9 bits max = 511 (5110mA)
+        return make_error_code(ErrorCode::InvalidParameter);
+    }
+
     return write_word(BQ25792_REG_INPUT_CURRENT_LIMIT, raw_value);
 }
 
@@ -392,8 +400,8 @@ bq25792::expected<void> Charger::set_precharge_control(float vbat_low, float ipr
         return make_error_code(ErrorCode::InvalidParameter);
     }
 
-    // Validate iprechrg (0.04A to 2.52A in 40mA steps)
-    if (iprechrg < 0.04f || iprechrg > 2.52f) {
+    // Validate iprechrg (40mA to 2000mA in 40mA steps per datasheet)
+    if (iprechrg < 0.04f || iprechrg > 2.0f) {
         return make_error_code(ErrorCode::InvalidParameter);
     }
 
@@ -460,19 +468,44 @@ bq25792::expected<bool> Charger::is_fault_present() const {
     return (fault0.value() | fault1.value()) != 0;
 }
 
+bq25792::expected<bool> Charger::is_enabled() const {
+    auto result = read_byte(BQ25792_REG_CHARGER_CONTROL_0);
+    if (!result) {
+        return result.error();
+    }
+
+    return (result.value() & BQ25792_EN_CHG_MASK) != 0;
+}
+
+bq25792::expected<void> Charger::set_enabled(bool enable) {
+    auto result = read_byte(BQ25792_REG_CHARGER_CONTROL_0);
+    if (!result) {
+        return result.error();
+    }
+
+    uint8_t reg = result.value();
+    if (enable) {
+        reg |= BQ25792_EN_CHG_MASK;  // Set EN_CHG bit
+    } else {
+        reg &= ~BQ25792_EN_CHG_MASK; // Clear EN_CHG bit
+    }
+
+    return write_byte(BQ25792_REG_CHARGER_CONTROL_0, reg);
+}
+
 bq25792::expected<float> Charger::get_vbat() const {
-    // Enable VBAT ADC
-    auto result = write_byte(BQ25792_REG_ADC_DISABLE_0, 0b10001111);
+    // Enable VBAT ADC by clearing the disable bit
+    auto result = write_byte(BQ25792_REG_ADC_DISABLE_0, ~BQ25792_VBAT_ADC_DIS_MASK);
     if (!result) {
         return result.error();
     }
 
-    result = write_byte(BQ25792_REG_ADC_DISABLE_1, 0b11111111);
+    result = write_byte(BQ25792_REG_ADC_DISABLE_1, 0xFF);  // Enable all other ADCs
     if (!result) {
         return result.error();
     }
 
-    result = write_byte(BQ25792_REG_ADC_CONTROL, 0b10001100);
+    result = write_byte(BQ25792_REG_ADC_CONTROL, BQ25792_ADC_EN_MASK | 0x0C);  // Enable ADC with 12-bit resolution
     if (!result) {
         return result.error();
     }
@@ -489,7 +522,7 @@ bq25792::expected<float> Charger::get_vbat() const {
 
 bq25792::expected<float> Charger::get_ibus() const {
     // Enable IBUS ADC
-    auto result = write_byte(BQ25792_REG_ADC_CONTROL, 0b10001100);
+    auto result = write_byte(BQ25792_REG_ADC_CONTROL, BQ25792_ADC_EN_MASK | 0x0C);
     if (!result) {
         return result.error();
     }
@@ -511,13 +544,128 @@ bq25792::expected<float> Charger::get_ibus() const {
         value = static_cast<float>(raw_value);
     }
 
-    // IBUS ADC resolution is 16-bit with 10mV/100mV scale factor
-    // For BQ25792, IBUS ADC code = (IBUS * 100) / 100 = IBUS * 1 (in mA)
+    // IBUS ADC: 16-bit 2's complement, 1mA step (0-5000mA range)
     return value / 1000.0f;  // Convert to amps
 }
 
 bq25792::expected<uint8_t> Charger::get_device_info() const {
     return read_byte(BQ25792_REG_PART_INFORMATION);
+}
+
+bq25792::expected<float> Charger::get_vbus() const {
+    // Enable VBUS ADC by clearing the disable bit
+    auto result = write_byte(BQ25792_REG_ADC_DISABLE_0, ~BQ25792_VBUS_ADC_DIS_MASK);
+    if (!result) {
+        return result.error();
+    }
+
+    result = write_byte(BQ25792_REG_ADC_DISABLE_1, 0xFF);  // Enable all other ADCs
+    if (!result) {
+        return result.error();
+    }
+
+    result = write_byte(BQ25792_REG_ADC_CONTROL, BQ25792_ADC_EN_MASK | 0x0C);  // Enable ADC with 12-bit resolution
+    if (!result) {
+        return result.error();
+    }
+
+    uint8_t buffer[2];
+    result = read_bytes(BQ25792_REG_VBUS_ADC, buffer, 2);
+    if (!result) {
+        return result.error();
+    }
+
+    uint16_t raw_value = (static_cast<uint16_t>(buffer[0]) << 8) | buffer[1];
+    return static_cast<float>(raw_value) / 1000.0f;  // Convert to volts
+}
+
+bq25792::expected<float> Charger::get_vsys() const {
+    // Enable VSYS ADC by clearing the disable bit
+    auto result = write_byte(BQ25792_REG_ADC_DISABLE_0, ~BQ25792_VSYS_ADC_DIS_MASK);
+    if (!result) {
+        return result.error();
+    }
+
+    result = write_byte(BQ25792_REG_ADC_DISABLE_1, 0xFF);  // Enable all other ADCs
+    if (!result) {
+        return result.error();
+    }
+
+    result = write_byte(BQ25792_REG_ADC_CONTROL, BQ25792_ADC_EN_MASK | 0x0C);  // Enable ADC with 12-bit resolution
+    if (!result) {
+        return result.error();
+    }
+
+    uint8_t buffer[2];
+    result = read_bytes(BQ25792_REG_VSYS_ADC, buffer, 2);
+    if (!result) {
+        return result.error();
+    }
+
+    uint16_t raw_value = (static_cast<uint16_t>(buffer[0]) << 8) | buffer[1];
+    return static_cast<float>(raw_value) / 1000.0f;  // Convert to volts
+}
+
+bq25792::expected<float> Charger::get_ibat() const {
+    // Enable IBAT ADC by clearing the disable bit
+    auto result = write_byte(BQ25792_REG_ADC_DISABLE_0, ~BQ25792_IBAT_ADC_DIS_MASK);
+    if (!result) {
+        return result.error();
+    }
+
+    result = write_byte(BQ25792_REG_ADC_DISABLE_1, 0xFF);  // Enable all other ADCs
+    if (!result) {
+        return result.error();
+    }
+
+    result = write_byte(BQ25792_REG_ADC_CONTROL, BQ25792_ADC_EN_MASK | 0x0C);  // Enable ADC with 12-bit resolution
+    if (!result) {
+        return result.error();
+    }
+
+    uint8_t buffer[2];
+    result = read_bytes(BQ25792_REG_IBAT_ADC, buffer, 2);
+    if (!result) {
+        return result.error();
+    }
+
+    int16_t raw_value = static_cast<int16_t>((static_cast<uint16_t>(buffer[0]) << 8) | buffer[1]);
+
+    // Convert from two's complement to float
+    float value;
+    if (raw_value & 0x8000) {
+        // Negative value
+        value = -static_cast<float>(0x10000 - raw_value);
+    } else {
+        value = static_cast<float>(raw_value);
+    }
+
+    return value / 1000.0f;  // Convert to amps
+}
+
+bq25792::expected<ChargerInputSource> Charger::get_input_source() const {
+    auto result = read_byte(BQ25792_REG_CHARGER_CONTROL_5);
+    if (!result) {
+        return result.error();
+    }
+
+    uint8_t data = result.value();
+    uint8_t input_sel = (data & BQ25792_INPUT_SOURCE_MASK) >> BQ25792_INPUT_SOURCE_SHIFT;
+
+    return static_cast<ChargerInputSource>(input_sel);
+}
+
+bq25792::expected<void> Charger::set_input_source(ChargerInputSource source) const {
+    auto result = read_byte(BQ25792_REG_CHARGER_CONTROL_5);
+    if (!result) {
+        return result.error();
+    }
+
+    uint8_t current = result.value();
+    uint8_t new_value = (current & ~BQ25792_INPUT_SOURCE_MASK) | 
+                        ((static_cast<uint8_t>(source) << BQ25792_INPUT_SOURCE_SHIFT) & BQ25792_INPUT_SOURCE_MASK);
+
+    return write_byte(BQ25792_REG_CHARGER_CONTROL_5, new_value);
 }
 
 } // namespace bq25792

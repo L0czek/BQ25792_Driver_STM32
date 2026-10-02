@@ -146,6 +146,43 @@ constexpr uint8_t BQ25792_BATTERY_PRESENT_MASK         = 0x01;
 // Part Information
 constexpr uint8_t BQ25792_PART_ID                      = 0x0A;  // Expected part ID
 
+// ============================================================================= 
+// Register Bit Masks and Constants
+// =============================================================================
+
+// Charger Control 0 (REG0F) - EN_CHG bit
+constexpr uint8_t BQ25792_EN_CHG_MASK                  = 0x01;  // Bit 0: Charger Enable
+
+// ADC Function Disable 0 (REG2F) - Individual ADC disable bits
+constexpr uint8_t BQ25792_IBUS_ADC_DIS_MASK            = 0x80;  // Bit 7: IBUS ADC Disable
+constexpr uint8_t BQ25792_IBAT_ADC_DIS_MASK            = 0x40;  // Bit 6: IBAT ADC Disable
+constexpr uint8_t BQ25792_VBUS_ADC_DIS_MASK            = 0x20;  // Bit 5: VBUS ADC Disable
+constexpr uint8_t BQ25792_VBAT_ADC_DIS_MASK            = 0x10;  // Bit 4: VBAT ADC Disable
+constexpr uint8_t BQ25792_VSYS_ADC_DIS_MASK            = 0x08;  // Bit 3: VSYS ADC Disable
+constexpr uint8_t BQ25792_TS_ADC_DIS_MASK              = 0x04;  // Bit 2: TS ADC Disable
+constexpr uint8_t BQ25792_TDIE_ADC_DIS_MASK            = 0x02;  // Bit 1: TDIE ADC Disable
+
+// ADC Function Disable 1 (REG30) - Individual ADC disable bits
+constexpr uint8_t BQ25792_DP_ADC_DIS_MASK              = 0x80;  // Bit 7: D+ ADC Disable
+constexpr uint8_t BQ25792_DM_ADC_DIS_MASK              = 0x40;  // Bit 6: D- ADC Disable
+constexpr uint8_t BQ25792_VAC2_ADC_DIS_MASK            = 0x20;  // Bit 5: VAC2 ADC Disable
+constexpr uint8_t BQ25792_VAC1_ADC_DIS_MASK            = 0x10;  // Bit 4: VAC1 ADC Disable
+
+// ADC Control (REG2E) - ADC configuration bits
+constexpr uint8_t BQ25792_ADC_EN_MASK                  = 0x80;  // Bit 7: ADC Enable
+constexpr uint8_t BQ25792_ADC_RATE_MASK                = 0x40;  // Bit 6: ADC Conversion Rate
+constexpr uint8_t BQ25792_ADC_SAMPLE_MASK              = 0x30;  // Bits 5-4: ADC Sample Speed
+constexpr uint8_t BQ25792_ADC_AVG_MASK                 = 0x08;  // Bit 3: ADC Average
+constexpr uint8_t BQ25792_ADC_AVG_INIT_MASK            = 0x04;  // Bit 2: ADC Average Initial
+
+// Input Source Selection (REG14) - Bits 6-5 for input selection
+// Note: This is an implementation-specific mapping. The BQ25792 datasheet
+// shows bit 6 as RESERVED and bit 5 as EN_IBAT in REG14. The actual input
+// source selection in BQ25792 is typically controlled by EN_ACDRV1/EN_ACDRV2
+// bits in REG13 or through the automatic dual-input power mux.
+constexpr uint8_t BQ25792_INPUT_SOURCE_MASK            = 0x60;  // Bits 6-5: Input Source Selection
+constexpr uint8_t BQ25792_INPUT_SOURCE_SHIFT           = 5;     // Shift count for input source
+
 namespace bq25792 {
 
 /**
@@ -231,6 +268,16 @@ enum class VBUSStatus : uint8_t {
     OTGMode = 0x7,
     NotQualifiedAdapter = 0x8,
     PoweredFromVBUS = 0xB
+};
+
+/**
+ * @brief Charger Input Source Selection
+ */
+enum class ChargerInputSource : uint8_t {
+    USB_DPDM = 0x0,
+    AC1 = 0x1,
+    AC2 = 0x2,
+    AUTO = 0x3
 };
 
 /**
@@ -374,7 +421,7 @@ public:
 
     /**
      * @brief Set minimal system voltage limit
-     * @param voltage Voltage in volts (3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5)
+     * @param voltage Voltage in volts (range: 2.5V to 16.0V in 250mV steps)
      * @return bq25792::expected<void> - error on failure
      */
     bq25792::expected<void> set_vsys_min(float voltage);
@@ -387,7 +434,7 @@ public:
 
     /**
      * @brief Set charge voltage limit
-     * @param voltage Voltage in volts (range: 3.5V to 19.2V)
+     * @param voltage Voltage in volts (range: 3.0V to 18.8V)
      * @return bq25792::expected<void> - error on failure
      */
     bq25792::expected<void> set_charge_voltage_limit(float voltage);
@@ -400,7 +447,7 @@ public:
 
     /**
      * @brief Set charge current limit
-     * @param current Current in amps (range: 0A to 12.79A)
+     * @param current Current in amps (range: 0.05A to 5.0A)
      * @return bq25792::expected<void> - error on failure
      */
     bq25792::expected<void> set_charge_current_limit(float current);
@@ -413,7 +460,7 @@ public:
 
     /**
      * @brief Set input voltage limit
-     * @param voltage Voltage in volts (range: 3.9V to 25.5V)
+     * @param voltage Voltage in volts (range: 3.6V to 22.0V)
      * @return bq25792::expected<void> - error on failure
      */
     bq25792::expected<void> set_input_voltage_limit(float voltage);
@@ -426,7 +473,7 @@ public:
 
     /**
      * @brief Set input current limit
-     * @param current Current in amps (range: 0A to 12.79A)
+     * @param current Current in amps (range: 0.1A to 3.3A)
      * @return bq25792::expected<void> - error on failure
      */
     bq25792::expected<void> set_input_current_limit(float current);
@@ -476,6 +523,19 @@ public:
     bq25792::expected<bool> is_fault_present() const;
 
     /**
+     * @brief Check if charger is enabled
+     * @return Expected boolean - true if enabled
+     */
+    bq25792::expected<bool> is_enabled() const;
+
+    /**
+     * @brief Enable/disable the charger
+     * @param enable true to enable, false to disable
+     * @return Expected void on success
+     */
+    bq25792::expected<void> set_enabled(bool enable);
+
+    /**
      * @brief Get battery voltage
      * @return Expected voltage in volts
      */
@@ -486,6 +546,24 @@ public:
      * @return Expected current in amps (positive for charge, negative for discharge)
      */
     bq25792::expected<float> get_ibus() const;
+
+    /**
+     * @brief Get VBUS voltage
+     * @return Expected voltage in volts
+     */
+    bq25792::expected<float> get_vbus() const;
+
+    /**
+     * @brief Get VSYS voltage
+     * @return Expected voltage in volts
+     */
+    bq25792::expected<float> get_vsys() const;
+
+    /**
+     * @brief Get IBAT current
+     * @return Expected current in amps
+     */
+    bq25792::expected<float> get_ibat() const;
 
     /**
      * @brief Get device info (Part ID)
@@ -507,6 +585,19 @@ public:
      * @brief Check if driver is initialized
      */
     bool is_initialized() const { return initialized_; }
+
+    /**
+     * @brief Get input source selection
+     * @return Expected ChargerInputSource enum
+     */
+    bq25792::expected<ChargerInputSource> get_input_source() const;
+
+    /**
+     * @brief Set input source selection
+     * @param source Charger input source
+     * @return bq25792::expected<void> - error on failure
+     */
+    bq25792::expected<void> set_input_source(ChargerInputSource source) const;
 
     /**
      * @brief Get VSYS_MIN fixed offset
