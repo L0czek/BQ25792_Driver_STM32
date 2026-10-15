@@ -634,6 +634,49 @@ public:
      */
     static constexpr uint16_t get_precharge_current_step() { return BQ25792_PRECHARGE_CURRENT_STEP; }
 
+    // =============================================================================
+    // Burst Read/Write Methods for Multiple Registers
+    // =============================================================================
+
+    /**
+     * @brief Read multiple consecutive registers starting from a given address
+     * @param reg_addr Starting register address
+     * @param data Buffer to store read data
+     * @param size Number of bytes to read (max 16 to avoid address wrap)
+     * @return Expected void on success
+     */
+    bq25792::expected<void> read_block(uint8_t reg_addr, uint8_t* data, uint8_t size) const;
+
+    /**
+     * @brief Write multiple consecutive registers starting from a given address
+     * @param reg_addr Starting register address
+     * @param data Data to write
+     * @param size Number of bytes to write (max 16 to avoid address wrap)
+     * @return Expected void on success
+     */
+    bq25792::expected<void> write_block(uint8_t reg_addr, const uint8_t* data, uint8_t size) const;
+
+    /**
+     * @brief Read all status and flag registers in one burst (registers 0x1B-0x27)
+     * @param buffer Buffer of at least 13 bytes to store status registers
+     * @return Expected void on success
+     */
+    bq25792::expected<void> read_status_block(uint8_t buffer[13]) const;
+
+    /**
+     * @brief Read all ADC registers in one burst (registers 0x31-0x45)
+     * @param buffer Buffer of at least 22 bytes to store ADC values
+     * @return Expected void on success
+     */
+    bq25792::expected<void> read_adc_block(uint8_t buffer[22]) const;
+
+    /**
+     * @brief Read all configuration registers in one burst (registers 0x00-0x14)
+     * @param buffer Buffer of at least 21 bytes to store configuration
+     * @return Expected void on success
+     */
+    bq25792::expected<void> read_config_block(uint8_t buffer[21]) const;
+
 private:
     I2C_HandleTypeDef* hi2c_;
     bool initialized_;

@@ -668,4 +668,95 @@ bq25792::expected<void> Charger::set_input_source(ChargerInputSource source) con
     return write_byte(BQ25792_REG_CHARGER_CONTROL_5, new_value);
 }
 
+// =============================================================================
+// Burst Read/Write Implementation
+// =============================================================================
+
+bq25792::expected<void> Charger::read_block(uint8_t reg_addr, uint8_t* data, uint8_t size) const {
+    if (!hi2c_) {
+        return make_error_code(ErrorCode::HALError);
+    }
+
+    if (size > 16) {
+        return make_error_code(ErrorCode::InvalidParameter);  // Avoid address wrap
+    }
+
+    HAL_StatusTypeDef status;
+
+    // Send register address
+    status = HAL_I2C_Master_Transmit(
+        hi2c_,
+        (BQ25792_I2C_ADDRESS << 1),
+        &reg_addr,
+        1,
+        BQ25792_TIMEOUT_MS
+    );
+
+    if (status != HAL_OK) {
+        return convert_hal_status(status);
+    }
+
+    // Restart and read data
+    status = HAL_I2C_Master_Receive(
+        hi2c_,
+        (BQ25792_I2C_ADDRESS << 1),
+        data,
+        size,
+        BQ25792_TIMEOUT_MS
+    );
+
+    if (status != HAL_OK) {
+        return convert_hal_status(status);
+    }
+
+    return {};
+}
+
+bq25792::expected<void> Charger::write_block(uint8_t reg_addr, const uint8_t* data, uint8_t size) const {
+    if (!hi2c_) {
+        return make_error_code(ErrorCode::HALError);
+    }
+
+    if (size > 16) {
+        return make_error_code(ErrorCode::InvalidParameter);  // Avoid address wrap
+    }
+
+    // Build transmission buffer with register address prepended
+    uint8_t buffer[17];
+    if (size > 16) {
+        return make_error_code(ErrorCode::InvalidParameter);
+    }
+    buffer[0] = reg_addr;
+    std::memcpy(buffer + 1, data, size);
+
+    HAL_StatusTypeDef status = HAL_I2C_Master_Transmit(
+        hi2c_,
+        (BQ25792_I2C_ADDRESS << 1),
+        buffer,
+        size + 1,
+        BQ25792_TIMEOUT_MS
+    );
+
+    if (status != HAL_OK) {
+        return convert_hal_status(status);
+    }
+
+    return {};
+}
+
+bq25792::expected<void> Charger::read_status_block(uint8_t buffer[13]) const {
+    // Registers 0x1B-0x27: CHARGER_STATUS_0 through FAULT_FLAG_1
+    return read_block(BQ25792_REG_CHARGER_STATUS_0, buffer, 13);
+}
+
+bq25792::expected<void> Charger::read_adc_block(uint8_t buffer[22]) const {
+    // Registers 0x31-0x45: IBUS_ADC through DM_ADC
+    return read_block(BQ25792_REG_IBUS_ADC, buffer, 22);
+}
+
+bq25792::expected<void> Charger::read_config_block(uint8_t buffer[21]) const {
+    // Registers 0x00-0x14: MINIMAL_SYSTEM_VOLTAGE through CHARGER_CONTROL_5
+    return read_block(BQ25792_REG_MINIMAL_SYSTEM_VOLTAGE, buffer, 21);
+}
+
 } // namespace bq25792
