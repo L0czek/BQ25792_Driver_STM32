@@ -6,11 +6,10 @@
 #include <array>
 #include <string>
 #include <cstring>
-#include <stdexcept>
 #include <system_error>
+#include <utility>
 
-// Include custom expected for C++17 compatibility
-// This is namespace-specific to avoid duplicate definitions
+// std::expected alias (driver is built as C++23)
 #include "bq25792_expected.hpp"
 
 // HAL includes (skip in unit test mode)
@@ -144,14 +143,16 @@ constexpr uint8_t BQ25792_VBUS_PRESENT_STAT_MASK       = 0x01;
 constexpr uint8_t BQ25792_BATTERY_PRESENT_MASK         = 0x01;
 
 // Part Information
-constexpr uint8_t BQ25792_PART_ID                      = 0x0A;  // Expected part ID
+constexpr uint8_t BQ25792_PART_NUMBER_MASK            = 0x38;  // REG48 bits 5-3: PN_2:0
+constexpr uint8_t BQ25792_PART_NUMBER_SHIFT           = 3;
+constexpr uint8_t BQ25792_PART_NUMBER                 = 0x01;  // PN = 001b -> BQ25792 (REG48, Table 8-70)
 
 // ============================================================================= 
 // Register Bit Masks and Constants
 // =============================================================================
 
 // Charger Control 0 (REG0F) - EN_CHG bit
-constexpr uint8_t BQ25792_EN_CHG_MASK                  = 0x01;  // Bit 0: Charger Enable
+constexpr uint8_t BQ25792_EN_CHG_MASK                  = 0x20;  // Bit 5: EN_CHG (bit 0 is reserved)
 
 // ADC Function Disable 0 (REG2F) - Individual ADC disable bits
 constexpr uint8_t BQ25792_IBUS_ADC_DIS_MASK            = 0x80;  // Bit 7: IBUS ADC Disable
@@ -175,13 +176,29 @@ constexpr uint8_t BQ25792_ADC_SAMPLE_MASK              = 0x30;  // Bits 5-4: ADC
 constexpr uint8_t BQ25792_ADC_AVG_MASK                 = 0x08;  // Bit 3: ADC Average
 constexpr uint8_t BQ25792_ADC_AVG_INIT_MASK            = 0x04;  // Bit 2: ADC Average Initial
 
-// Input Source Selection (REG14) - Bits 6-5 for input selection
-// Note: This is an implementation-specific mapping. The BQ25792 datasheet
-// shows bit 6 as RESERVED and bit 5 as EN_IBAT in REG14. The actual input
-// source selection in BQ25792 is typically controlled by EN_ACDRV1/EN_ACDRV2
-// bits in REG13 or through the automatic dual-input power mux.
-constexpr uint8_t BQ25792_INPUT_SOURCE_MASK            = 0x60;  // Bits 6-5: Input Source Selection
-constexpr uint8_t BQ25792_INPUT_SOURCE_SHIFT           = 5;     // Shift count for input source
+// Input power mux (dual ACFET-RBFET, datasheet 8.3.5.4)
+constexpr uint8_t BQ25792_EN_ACDRV2_MASK               = 0x80;  // REG13 bit 7: EN_ACDRV2
+constexpr uint8_t BQ25792_EN_ACDRV1_MASK               = 0x40;  // REG13 bit 6: EN_ACDRV1
+constexpr uint8_t BQ25792_DIS_ACDRV_MASK               = 0x80;  // REG12 bit 7: DIS_ACDRV (force both off)
+constexpr uint8_t BQ25792_ACRB2_STAT_MASK              = 0x80;  // REG1E bit 7: ACFET2-RBFET2 present
+constexpr uint8_t BQ25792_ACRB1_STAT_MASK              = 0x40;  // REG1E bit 6: ACFET1-RBFET1 present
+
+// Watchdog (REG10)
+constexpr uint8_t BQ25792_WD_RST_MASK                  = 0x08;  // REG10 bit 3: WD_RST (self clearing)
+constexpr uint8_t BQ25792_WATCHDOG_MASK                = 0x07;  // REG10 bits 2-0: WATCHDOG_2:0
+constexpr uint8_t BQ25792_WD_STAT_MASK                 = 0x20;  // REG1B bit 5: WD_STAT (1 = expired, default mode)
+
+// Termination control (REG09)
+constexpr uint8_t BQ25792_REG_RST_MASK                 = 0x40;  // REG09 bit 6: REG_RST
+
+// ADC control (REG2E) value used by the driver:
+// ADC_EN=1, ADC_RATE=0 (continuous), ADC_SAMPLE=01 (14-bit, 12 ms/channel), ADC_AVG=0
+constexpr uint8_t BQ25792_ADC_SAMPLE_14BIT             = 0x10;
+constexpr uint8_t BQ25792_ADC_CONTROL_VALUE            = BQ25792_ADC_EN_MASK | BQ25792_ADC_SAMPLE_14BIT;
+
+// Fault status bits that are real faults (REG20 bit 7 IBAT_REG_STAT is a regulation status)
+constexpr uint8_t BQ25792_FAULT0_MASK                  = 0x7F;  // VBUS/VBAT OVP, IBUS/IBAT/CONV OCP, VAC2/VAC1 OVP
+constexpr uint8_t BQ25792_FAULT1_MASK                  = 0xF4;  // VSYS_SHORT, VSYS_OVP, OTG_OVP, OTG_UVP, TSHUT
 
 namespace bq25792 {
 
@@ -271,7 +288,13 @@ enum class VBUSStatus : uint8_t {
 };
 
 /**
- * @brief Charger Input Source Selection
+ * @brief Charger input power-mux selection (dual ACFET-RBFET, datasheet 8.3.5.4)
+ *
+ * AC1  - only the VAC1 path (EN_ACDRV1=1, EN_ACDRV2=0)
+ * AC2  - only the VAC2 path (EN_ACDRV1=0, EN_ACDRV2=1)
+ * AUTO - DIS_ACDRV=0, charger turns on whichever path got a valid input first
+ *        and fails over automatically
+ * USB_DPDM - not a power-mux setting on this part; rejected by set_input_source()
  */
 enum class ChargerInputSource : uint8_t {
     USB_DPDM = 0x0,
@@ -281,104 +304,26 @@ enum class ChargerInputSource : uint8_t {
 };
 
 /**
- * @brief RAII wrapper for aligned buffers (for DMA if needed)
+ * @brief Precharge-to-fastcharge threshold (REG08 VBAT_LOWV_1:0), ratio of VREG
  */
-class Buffer {
-public:
-    /**
-     * @brief Create an aligned buffer
-     * @param size Buffer size in bytes
-     * @param alignment Alignment in bytes (default: 8 for I2C)
-     */
-    explicit Buffer(size_t size, size_t alignment = 8)
-        : buffer_(nullptr), size_(size), alignment_(alignment)
-    {
-        if (size == 0) {
-            throw std::invalid_argument("Buffer size cannot be zero");
-        }
-        buffer_ = static_cast<uint8_t*>(aligned_alloc(alignment, size));
-        if (!buffer_) {
-            throw std::bad_alloc();
-        }
-        std::fill(buffer_, buffer_ + size, 0);
-    }
+enum class VbatLowV : uint8_t {
+    Pct15   = 0x0,  // 15% * VREG
+    Pct62_2 = 0x1,  // 62.2% * VREG
+    Pct66_7 = 0x2,  // 66.7% * VREG
+    Pct71_4 = 0x3   // 71.4% * VREG (POR default)
+};
 
-    /**
-     * @brief Destructor
-     */
-    ~Buffer() {
-        if (buffer_) {
-            free(buffer_);
-        }
-    }
-
-    // Disable copy
-    Buffer(const Buffer&) = delete;
-    Buffer& operator=(const Buffer&) = delete;
-
-    // Enable move
-    Buffer(Buffer&& other) noexcept
-        : buffer_(other.buffer_), size_(other.size_), alignment_(other.alignment_)
-    {
-        other.buffer_ = nullptr;
-        other.size_ = 0;
-        other.alignment_ = 8;
-    }
-
-    Buffer& operator=(Buffer&& other) noexcept {
-        if (this != &other) {
-            if (buffer_) {
-                free(buffer_);
-            }
-            buffer_ = other.buffer_;
-            size_ = other.size_;
-            alignment_ = other.alignment_;
-            other.buffer_ = nullptr;
-            other.size_ = 0;
-            other.alignment_ = 8;
-        }
-        return *this;
-    }
-
-    /**
-     * @brief Get pointer to buffer data
-     */
-    uint8_t* data() { return buffer_; }
-
-    const uint8_t* data() const { return buffer_; }
-
-    /**
-     * @brief Get buffer size
-     */
-    size_t size() const { return size_; }
-
-    /**
-     * @brief Get alignment
-     */
-    size_t alignment() const { return alignment_; }
-
-    /**
-     * @brief Clear buffer to zero
-     */
-    void clear() {
-        if (buffer_) {
-            std::fill(buffer_, buffer_ + size_, 0);
-        }
-    }
-
-    /**
-     * @brief Fill buffer with value
-     */
-    void fill(uint8_t value) {
-        if (buffer_) {
-            std::fill(buffer_, buffer_ + size_, value);
-        }
-    }
-
-private:
-    uint8_t* buffer_;
-    size_t size_;
-    size_t alignment_;
+/**
+ * @brief Snapshot of the ADC result registers (one burst read, 0x31-0x3E)
+ */
+struct AdcMeasurements {
+    float ibus_a;   // signed, + = into charger
+    float ibat_a;   // signed, + = charging, - = discharging
+    float vbus_v;
+    float vac1_v;
+    float vac2_v;
+    float vbat_v;
+    float vsys_v;
 };
 
 /**
@@ -479,18 +424,18 @@ public:
     bq25792::expected<void> set_input_current_limit(float current);
 
     /**
-     * @brief Get precharge control settings
-     * @return Precharge control struct with Vbat_low and Iprechrg
+     * @brief Get precharge control settings (REG08)
+     * @return pair {VBAT_LOWV threshold (ratio of VREG), precharge current in amps}
      */
-    bq25792::expected<std::pair<float, float>> get_precharge_control() const;
+    bq25792::expected<std::pair<VbatLowV, float>> get_precharge_control() const;
 
     /**
-     * @brief Set precharge control settings
-     * @param vbat_low Vbat low threshold voltage in volts
-     * @param iprechrg Precharge current in amps
+     * @brief Set precharge control settings (REG08)
+     * @param vbat_low Precharge-to-fastcharge threshold as ratio of VREG
+     * @param iprechrg Precharge current in amps (0.04 - 2.0 A, 40 mA steps)
      * @return bq25792::expected<void> - error on failure
      */
-    bq25792::expected<void> set_precharge_control(float vbat_low, float iprechrg);
+    bq25792::expected<void> set_precharge_control(VbatLowV vbat_low, float iprechrg);
 
     /**
      * @brief Check if input is plugged in (VBUS present)
@@ -564,6 +509,37 @@ public:
      * @return Expected current in amps
      */
     bq25792::expected<float> get_ibat() const;
+
+    /**
+     * @brief Read all main ADC channels in one burst (consistent snapshot)
+     *
+     * The ADC is configured for continuous conversion by initialize() /
+     * configure_adc(); this only reads the result registers.
+     */
+    bq25792::expected<AdcMeasurements> get_adc_measurements() const;
+
+    /**
+     * @brief (Re)configure the ADC: continuous, 14-bit, all main channels enabled
+     *
+     * ADC_EN is reset by the watchdog, so call this again after a watchdog expiry.
+     */
+    bq25792::expected<void> configure_adc();
+
+    /**
+     * @brief Reset the I2C watchdog timer (REG10 WD_RST)
+     *
+     * Must be called more often than the watchdog period (40 s default),
+     * otherwise ICHG, EN_CHG, IPRECHG, ITERM and ADC_EN revert to defaults.
+     */
+    bq25792::expected<void> kick_watchdog();
+
+    /**
+     * @brief Check whether the watchdog has expired (REG1B WD_STAT)
+     *
+     * When true the charger is in default mode and the host settings that are
+     * "reset by WATCHDOG" have been lost and must be re-applied.
+     */
+    bq25792::expected<bool> is_watchdog_expired() const;
 
     /**
      * @brief Get device info (Part ID)
@@ -710,6 +686,8 @@ private:
      * @brief Write a 16-bit word to registers (big-endian)
      */
     bq25792::expected<void> write_word(uint8_t reg_addr, uint16_t data) const;
+
+    bq25792::expected<void> update_bits(uint8_t reg_addr, uint8_t mask, uint8_t value) const;
 };
 
 } // namespace bq25792
