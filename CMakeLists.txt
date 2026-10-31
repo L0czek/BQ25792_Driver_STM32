@@ -172,10 +172,14 @@ target_compile_options(${PROJECT_NAME}
 # Compile Definitions
 # =============================================================================
 
+# Per-transfer I2C timeout. A register transfer takes < 1 ms at 100-400 kHz; a
+# long timeout lets one dead device block a shared bus for seconds.
+set(BQ25792_TIMEOUT_MS 20 CACHE STRING "BQ25792 I2C transfer timeout in ms")
+
 target_compile_definitions(${PROJECT_NAME}
     PUBLIC
         BQ25792_I2C_ADDRESS=0x6B
-        BQ25792_TIMEOUT_MS=1000
+        BQ25792_TIMEOUT_MS=${BQ25792_TIMEOUT_MS}
         BQ25792_IBUS_ADC_RESOLUTION=16
         BQ25792_VBAT_ADC_RESOLUTION=16
         BQ25792_VSYS_ADC_RESOLUTION=16
@@ -248,7 +252,7 @@ if(BQ25792_BUILD_UNIT_TESTS)
             ${HAL_INCLUDE_PATHS}
             -D${BQ25792_MCU}
             -DBQ25792_I2C_ADDRESS=0x6B
-            -DBQ25792_TIMEOUT_MS=1000
+            -DBQ25792_TIMEOUT_MS=${BQ25792_TIMEOUT_MS}
             -DBQ25792_UNIT_TEST
             -o ${CMAKE_CURRENT_BINARY_DIR}/test_bq25792.elf
             ${TEST_SOURCES}

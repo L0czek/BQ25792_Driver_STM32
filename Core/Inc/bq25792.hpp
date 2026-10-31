@@ -27,7 +27,7 @@
 #endif
 
 #ifndef BQ25792_TIMEOUT_MS
-#define BQ25792_TIMEOUT_MS 1000
+#define BQ25792_TIMEOUT_MS 20
 #endif
 
 // ADC configuration
@@ -214,7 +214,10 @@ enum class ErrorCode : uint8_t {
     InvalidParameter,
     NotInitialized,
     BatteryNotPresent,
-    FaultDetected
+    FaultDetected,
+    // I2C failure classes (single-master bus, so ARLO also means a bus fault):
+    Nack,             // device did not acknowledge (absent, busy, or rejected the command)
+    BusError
 };
 
 /**
@@ -237,6 +240,8 @@ public:
             case ErrorCode::NotInitialized: return "BQ25792 not initialized";
             case ErrorCode::BatteryNotPresent: return "Battery not present";
             case ErrorCode::FaultDetected: return "Fault condition detected";
+            case ErrorCode::Nack: return "I2C NACK (device not responding)";
+            case ErrorCode::BusError: return "I2C bus error";
             default: return "Unknown error";
         }
     }
@@ -660,7 +665,7 @@ private:
     /**
      * @brief Convert HAL status to expected error code
      */
-    static std::error_code convert_hal_status(HAL_StatusTypeDef status);
+    std::error_code convert_hal_status(HAL_StatusTypeDef status) const;
 
     /**
      * @brief Read a single byte from a register

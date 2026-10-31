@@ -45,12 +45,18 @@ Charger::Charger(I2C_HandleTypeDef* hi2c)
 
 Charger::~Charger() = default;
 
-std::error_code Charger::convert_hal_status(HAL_StatusTypeDef status) {
+std::error_code Charger::convert_hal_status(HAL_StatusTypeDef status) const {
+    // Only called for failed transfers.
+    const uint32_t err = hi2c_ ? HAL_I2C_GetError(hi2c_) : 0u;
+    if (err & HAL_I2C_ERROR_AF) {
+        return make_error_code(ErrorCode::Nack);
+    }
+    if (err & (HAL_I2C_ERROR_BERR | HAL_I2C_ERROR_ARLO)) {
+        return make_error_code(ErrorCode::BusError);
+    }
     switch (status) {
-        case HAL_OK:      return make_error_code(ErrorCode::None);
         case HAL_TIMEOUT: return make_error_code(ErrorCode::Timeout);
-        case HAL_BUSY:    return make_error_code(ErrorCode::I2CError);
-        case HAL_ERROR:
+        case HAL_BUSY:    return make_error_code(ErrorCode::BusError);  // BUSY flag stuck: SDA/SCL held low
         default:          return make_error_code(ErrorCode::HALError);
     }
 }
