@@ -200,6 +200,58 @@ constexpr uint8_t BQ25792_ADC_CONTROL_VALUE            = BQ25792_ADC_EN_MASK | B
 constexpr uint8_t BQ25792_FAULT0_MASK                  = 0x7F;  // VBUS/VBAT OVP, IBUS/IBAT/CONV OCP, VAC2/VAC1 OVP
 constexpr uint8_t BQ25792_FAULT1_MASK                  = 0xF4;  // VSYS_SHORT, VSYS_OVP, OTG_OVP, OTG_UVP, TSHUT
 
+// Charger Status 0 (REG1B, Table 8-36). WD_STAT and VBUS_PRESENT_STAT are defined above.
+constexpr uint8_t BQ25792_IINDPM_STAT_MASK             = 0x80;  // bit 7: in IINDPM (IOTG in OTG mode)
+constexpr uint8_t BQ25792_VINDPM_STAT_MASK             = 0x40;  // bit 6: in VINDPM (VOTG in OTG mode)
+constexpr uint8_t BQ25792_POORSRC_STAT_MASK            = 0x10;  // bit 4: poor source detected
+constexpr uint8_t BQ25792_PG_STAT_MASK                 = 0x08;  // bit 3: power good
+constexpr uint8_t BQ25792_AC2_PRESENT_STAT_MASK        = 0x04;  // bit 2: VAC2 present (> VAC_PRESENT, 3.4 V typ)
+constexpr uint8_t BQ25792_AC1_PRESENT_STAT_MASK        = 0x02;  // bit 1: VAC1 present
+
+// Charger Status 4 (REG1F, Table 8-40)
+constexpr uint8_t BQ25792_VBATOTG_LOW_STAT_MASK        = 0x10;  // bit 4: VBAT too low to enable OTG
+constexpr uint8_t BQ25792_TS_COLD_STAT_MASK            = 0x08;  // bit 3: TS colder than T1
+constexpr uint8_t BQ25792_TS_HOT_STAT_MASK             = 0x01;  // bit 0: TS hotter than T5
+
+// Fault Status 0/1 (REG20 Table 8-41, REG21 Table 8-42)
+constexpr uint8_t BQ25792_VAC2_OVP_STAT_MASK           = 0x02;  // REG20 bit 1
+constexpr uint8_t BQ25792_VAC1_OVP_STAT_MASK           = 0x01;  // REG20 bit 0
+constexpr uint8_t BQ25792_OTG_OVP_STAT_MASK            = 0x20;  // REG21 bit 5
+constexpr uint8_t BQ25792_OTG_UVP_STAT_MASK            = 0x10;  // REG21 bit 4
+
+// OTG regulation (REG0B Table 8-22, REG0D Table 8-23). Both reset by WATCHDOG and REG_RST.
+constexpr uint16_t BQ25792_VOTG_OFFSET_MV              = 2800;    // VOTG = 2800 mV + code * 10 mV
+constexpr uint16_t BQ25792_VOTG_STEP_MV                = 10;
+constexpr uint16_t BQ25792_VOTG_MASK                   = 0x07FF;  // REG0B bits 10:0 (15:11 reserved)
+constexpr uint16_t BQ25792_IOTG_STEP_MA                = 40;      // IOTG = code * 40 mA
+constexpr uint8_t  BQ25792_IOTG_MASK                   = 0x7F;    // REG0D bits 6:0
+constexpr uint8_t  BQ25792_PRECHG_TMR_MASK             = 0x80;    // REG0D bit 7 (kept by IOTG writes)
+
+// Charger Control 2 (REG11, Table 8-27)
+constexpr uint8_t BQ25792_AUTO_INDET_EN_MASK           = 0x40;  // bit 6: D+/D- detection at plug-in (WATCHDOG reset to 1)
+constexpr uint8_t BQ25792_HVDCP_EN_MASK                = 0x08;  // bit 3: HVDCP handshake (REG_RST only)
+
+// Charger Control 3 (REG12, Table 8-28). DIS_ACDRV is defined above.
+constexpr uint8_t BQ25792_EN_OTG_MASK                  = 0x40;  // bit 6: OTG mode (WATCHDOG reset to 0)
+
+// Charger Control 5 (REG14, Table 8-30)
+constexpr uint8_t BQ25792_EN_IBAT_MASK                 = 0x20;  // bit 5: IBAT discharge sensing for the ADC
+constexpr uint8_t BQ25792_EN_IINDPM_MASK               = 0x04;  // bit 2: internal IINDPM regulation
+constexpr uint8_t BQ25792_EN_EXTILIM_MASK              = 0x02;  // bit 1: ILIM_HIZ pin clamp (REG_RST only)
+
+// Temperature Control (REG16, Table 8-32): input pull-downs, REG_RST only
+constexpr uint8_t BQ25792_VBUS_PD_EN_MASK              = 0x08;  // bit 3: 6 kOhm on VBUS
+constexpr uint8_t BQ25792_VAC1_PD_EN_MASK              = 0x04;  // bit 2: ~60 Ohm on VAC1
+constexpr uint8_t BQ25792_VAC2_PD_EN_MASK              = 0x02;  // bit 1: ~60 Ohm on VAC2
+
+// ICO Current Limit (REG19/1A, Table 8-35): input current limit in use, read only
+constexpr uint16_t BQ25792_ICO_ILIM_MASK               = 0x01FF;  // bits 8:0, 10 mA
+constexpr uint16_t BQ25792_ICO_ILIM_STEP_MA            = 10;
+
+// ADC Function Disable 1 (REG30) value written by configure_adc(): D+/D- are not connected
+// on the board, so their channels only lengthen the continuous scan (VAC1 refresh).
+constexpr uint8_t BQ25792_ADC_DISABLE_1_VALUE          = BQ25792_DP_ADC_DIS_MASK | BQ25792_DM_ADC_DIS_MASK;
+
 namespace bq25792 {
 
 /**
@@ -329,6 +381,58 @@ struct AdcMeasurements {
     float vac2_v;
     float vbat_v;
     float vsys_v;
+};
+
+/**
+ * @brief Charger Status 0 (REG1B), decoded. Status bits, not the clear-on-read flags.
+ */
+struct InputStatus {
+    bool vbus_present;   // bit 0 VBUS_PRESENT_STAT
+    bool ac1_present;    // bit 1 AC1_PRESENT_STAT: VAC1 above VAC_PRESENT (3.4 V typ rising)
+    bool ac2_present;    // bit 2 AC2_PRESENT_STAT
+    bool power_good;     // bit 3 PG_STAT
+    bool poor_source;    // bit 4 POORSRC_STAT
+    bool wd_expired;     // bit 5 WD_STAT: watchdog expired or chip reset (default mode)
+    bool vindpm;         // bit 6 VINDPM_STAT (VOTG regulation in OTG mode)
+    bool iindpm;         // bit 7 IINDPM_STAT (IOTG regulation in OTG mode)
+    uint8_t raw;         // REG1B as read
+};
+
+/**
+ * @brief VAC1, VAC2 and VBAT ADC results (one burst read, 0x37-0x3C), 1 mV
+ *
+ * VAC1/VAC2 are measured at the pins, before the input FETs, so they read the
+ * connector voltage whether or not that path is selected.
+ */
+struct InputVoltages {
+    uint16_t vac1_mv;
+    uint16_t vac2_mv;
+    uint16_t vbat_mv;    // BATP remote sense
+};
+
+/**
+ * @brief Input mux and OTG control bits (REG12..REG13, one burst read)
+ */
+struct MuxState {
+    bool dis_acdrv;      // REG12 bit 7: both ACFET pairs forced off
+    bool en_otg;         // REG12 bit 6
+    bool en_acdrv1;      // REG13 bit 6: ACFET1-RBFET1 (VAC1) on; the chip updates it on its own swaps
+    bool en_acdrv2;      // REG13 bit 7: ACFET2-RBFET2 (VAC2) on
+};
+
+/**
+ * @brief Battery and OTG related status (REG1D..REG21, one burst read; the
+ *        clear-on-read flag registers from REG22 on are not touched)
+ */
+struct BatteryOtgStatus {
+    bool battery_present;   // REG1D bit 0 VBAT_PRESENT_STAT (VBAT > VBAT_UVLOZ)
+    bool vbat_otg_low;      // REG1F bit 4 VBATOTG_LOW_STAT
+    bool ts_cold;           // REG1F bit 3 TS_COLD_STAT
+    bool ts_hot;            // REG1F bit 0 TS_HOT_STAT
+    bool vac1_ovp;          // REG20 bit 0 VAC1_OVP_STAT
+    bool vac2_ovp;          // REG20 bit 1 VAC2_OVP_STAT
+    bool otg_ovp;           // REG21 bit 5 OTG_OVP_STAT
+    bool otg_uvp;           // REG21 bit 4 OTG_UVP_STAT
 };
 
 /**
@@ -524,7 +628,8 @@ public:
     bq25792::expected<AdcMeasurements> get_adc_measurements() const;
 
     /**
-     * @brief (Re)configure the ADC: continuous, 14-bit, all main channels enabled
+     * @brief (Re)configure the ADC: continuous, 14-bit, all main channels enabled,
+     *        D+/D- channels disabled (not connected on the board)
      *
      * ADC_EN is reset by the watchdog, so call this again after a watchdog expiry.
      */
@@ -533,18 +638,112 @@ public:
     /**
      * @brief Reset the I2C watchdog timer (REG10 WD_RST)
      *
-     * Must be called more often than the watchdog period (40 s default),
-     * otherwise ICHG, EN_CHG, IPRECHG, ITERM and ADC_EN revert to defaults.
+     * Must be called more often than the watchdog period (40 s default). On
+     * expiry the chip returns to default mode and every field marked "Reset by
+     * WATCHDOG" in section 8.5 reverts, among them ICHG, EN_CHG, IPRECHG, ITERM,
+     * VOTG, IOTG, EN_OTG, AUTO_INDET_EN, EN_IBAT, EN_IINDPM, IBAT_REG, the
+     * TS/JEITA settings and ADC_EN. VINDPM, IINDPM, VREG, EN_EXTILIM, HVDCP_EN,
+     * the input mux bits and the ADC channel/sample settings are kept.
      */
     bq25792::expected<void> kick_watchdog();
 
     /**
      * @brief Check whether the watchdog has expired (REG1B WD_STAT)
      *
-     * When true the charger is in default mode and the host settings that are
-     * "reset by WATCHDOG" have been lost and must be re-applied.
+     * When true the charger is in default mode (expiry or power-on reset) and the
+     * host settings that are "reset by WATCHDOG" have been lost and must be
+     * re-applied. Any register write restarts an expired watchdog and clears it.
      */
     bq25792::expected<bool> is_watchdog_expired() const;
+
+    // =========================================================================
+    // Input / power-path status
+    // =========================================================================
+
+    /**
+     * @brief Read REG1B (input presence, power good, watchdog, DPM status)
+     */
+    bq25792::expected<InputStatus> get_input_status() const;
+
+    /**
+     * @brief Decode a REG1B value (for callers that read it in a burst)
+     */
+    static InputStatus decode_input_status(uint8_t reg1b);
+
+    /**
+     * @brief VAC1, VAC2 and VBAT ADC results in one 6-byte burst (0x37-0x3C)
+     */
+    bq25792::expected<InputVoltages> get_input_voltages() const;
+
+    /**
+     * @brief DIS_ACDRV, EN_OTG, EN_ACDRV1/2 in one 2-byte burst (REG12-REG13)
+     */
+    bq25792::expected<MuxState> get_mux_state() const;
+
+    /**
+     * @brief Battery present, OTG/TS and VAC/OTG fault status (REG1D-REG21 burst)
+     */
+    bq25792::expected<BatteryOtgStatus> get_battery_otg_status() const;
+
+    /**
+     * @brief Input current limit in use (REG19 ICO_ILIM, 10 mA), in amps
+     *
+     * The lower of IINDPM and the ILIM_HIZ clamp (while EN_EXTILIM=1), or the
+     * ICO result. Reads 0 before an input has been qualified.
+     */
+    bq25792::expected<float> get_effective_input_current_limit() const;
+
+    // =========================================================================
+    // Input current / detection policy bits
+    // =========================================================================
+
+    /**
+     * @brief REG14 EN_EXTILIM: let the ILIM_HIZ pin clamp IINDPM (POR: on, REG_RST only)
+     */
+    bq25792::expected<void> set_ext_ilim_enabled(bool enable);
+
+    /**
+     * @brief REG14 EN_IBAT: IBAT ADC also measures discharge current (watchdog resets it)
+     */
+    bq25792::expected<void> set_ibat_discharge_sense(bool enable);
+
+    /**
+     * @brief REG11 AUTO_INDET_EN: D+/D- source detection at VAC1 plug-in, which
+     *        rewrites IINDPM (watchdog resets it to 1)
+     *
+     * Disabling also clears HVDCP_EN in the same write, so no HVDCP handshake runs.
+     */
+    bq25792::expected<void> set_auto_input_detection(bool enable);
+
+    /**
+     * @brief REG16 VAC1_PD_EN: VAC1 pull-down (~60 Ohm) to discharge the input
+     *
+     * About 6.7 W at 20 V: only briefly, never while a source drives VAC1.
+     */
+    bq25792::expected<void> set_vac1_pulldown(bool enable);
+
+    // =========================================================================
+    // OTG (reverse mode from the battery onto VBUS)
+    // =========================================================================
+
+    /**
+     * @brief OTG regulation voltage (REG0B, 10 mV steps, 2.8-22 V)
+     */
+    bq25792::expected<void> set_otg_voltage(float voltage);
+    bq25792::expected<float> get_otg_voltage() const;
+
+    /**
+     * @brief OTG current limit (REG0D IOTG, 40 mA steps, 0.12-3.32 A); keeps PRECHG_TMR
+     */
+    bq25792::expected<void> set_otg_current_limit(float current);
+    bq25792::expected<float> get_otg_current_limit() const;
+
+    /**
+     * @brief REG12 EN_OTG. With an ACFET pair fitted the converter only starts
+     *        once the matching EN_ACDRV bit is 1 (Table 8-8).
+     */
+    bq25792::expected<void> set_otg_enabled(bool enable);
+    bq25792::expected<bool> is_otg_enabled() const;
 
     /**
      * @brief Get device info (Part ID)
@@ -575,6 +774,10 @@ public:
 
     /**
      * @brief Set input source selection
+     *
+     * Clears DIS_ACDRV, then for AC1/AC2 writes EN_ACDRV1/EN_ACDRV2 in one REG13
+     * write (the chip ignores both set together). AUTO only clears DIS_ACDRV.
+     *
      * @param source Charger input source
      * @return bq25792::expected<void> - error on failure
      */

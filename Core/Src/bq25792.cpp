@@ -189,7 +189,9 @@ bq25792::expected<void> Charger::configure_adc() {
     if (auto r = write_byte(BQ25792_REG_ADC_DISABLE_0, 0x00); !r) {
         return r;
     }
-    if (auto r = write_byte(BQ25792_REG_ADC_DISABLE_1, 0x00); !r) {
+    // D+/D- (REG30 bits 7:6, Table 8-57, txt:11279-11289) are not connected on the board:
+    // disabling them shortens the continuous scan, so VAC1 (USB-C VBUS) refreshes faster.
+    if (auto r = write_byte(BQ25792_REG_ADC_DISABLE_1, BQ25792_ADC_DISABLE_1_VALUE); !r) {
         return r;
     }
     // Continuous conversion, 14-bit (12 ms per channel), no averaging.
@@ -483,6 +485,172 @@ bq25792::expected<void> Charger::set_input_source(ChargerInputSource source) con
     }
     // Both EN bits in one write to minimise the change-over time (datasheet 8.3.5.4).
     return update_bits(BQ25792_REG_CHARGER_CONTROL_4, BQ25792_EN_ACDRV1_MASK | BQ25792_EN_ACDRV2_MASK, acdrv);
+}
+
+// =============================================================================
+// Input / power-path status
+// =============================================================================
+
+InputStatus Charger::decode_input_status(uint8_t reg1b) {
+    // REG1B, Table 8-36 (txt:8405-8516)
+    InputStatus s{};
+    s.vbus_present = (reg1b & BQ25792_VBUS_PRESENT_STAT_MASK) != 0;
+    s.ac1_present = (reg1b & BQ25792_AC1_PRESENT_STAT_MASK) != 0;
+    s.ac2_present = (reg1b & BQ25792_AC2_PRESENT_STAT_MASK) != 0;
+    s.power_good = (reg1b & BQ25792_PG_STAT_MASK) != 0;
+    s.poor_source = (reg1b & BQ25792_POORSRC_STAT_MASK) != 0;
+    s.wd_expired = (reg1b & BQ25792_WD_STAT_MASK) != 0;
+    s.vindpm = (reg1b & BQ25792_VINDPM_STAT_MASK) != 0;
+    s.iindpm = (reg1b & BQ25792_IINDPM_STAT_MASK) != 0;
+    s.raw = reg1b;
+    return s;
+}
+
+bq25792::expected<InputStatus> Charger::get_input_status() const {
+    auto status0 = read_byte(BQ25792_REG_CHARGER_STATUS_0);
+    if (!status0) {
+        return std::unexpected(status0.error());
+    }
+    return decode_input_status(*status0);
+}
+
+bq25792::expected<InputVoltages> Charger::get_input_voltages() const {
+    // 0x37 VAC1, 0x39 VAC2, 0x3B VBAT: 16-bit big-endian, 1 mV (txt:11575, 11641, 11708)
+    uint8_t buf[6];
+    if (auto r = read_bytes(BQ25792_REG_VAC1_ADC, buf, sizeof(buf)); !r) {
+        return std::unexpected(r.error());
+    }
+    InputVoltages v{};
+    v.vac1_mv = be16(&buf[0]);
+    v.vac2_mv = be16(&buf[2]);
+    v.vbat_mv = be16(&buf[4]);
+    return v;
+}
+
+bq25792::expected<MuxState> Charger::get_mux_state() const {
+    uint8_t buf[2];  // REG12, REG13
+    if (auto r = read_bytes(BQ25792_REG_CHARGER_CONTROL_3, buf, sizeof(buf)); !r) {
+        return std::unexpected(r.error());
+    }
+    MuxState m{};
+    m.dis_acdrv = (buf[0] & BQ25792_DIS_ACDRV_MASK) != 0;   // txt:7507
+    m.en_otg = (buf[0] & BQ25792_EN_OTG_MASK) != 0;         // txt:7516
+    m.en_acdrv2 = (buf[1] & BQ25792_EN_ACDRV2_MASK) != 0;   // txt:7630
+    m.en_acdrv1 = (buf[1] & BQ25792_EN_ACDRV1_MASK) != 0;   // txt:7647
+    return m;
+}
+
+bq25792::expected<BatteryOtgStatus> Charger::get_battery_otg_status() const {
+    // REG1D..REG21 only: REG22-REG27 are clear-on-read flags owned by other readers.
+    uint8_t buf[5];
+    if (auto r = read_bytes(BQ25792_REG_CHARGER_STATUS_2, buf, sizeof(buf)); !r) {
+        return std::unexpected(r.error());
+    }
+    const uint8_t reg1d = buf[0];
+    const uint8_t reg1f = buf[2];
+    const uint8_t reg20 = buf[3];
+    const uint8_t reg21 = buf[4];
+    BatteryOtgStatus s{};
+    s.battery_present = (reg1d & BQ25792_BATTERY_PRESENT_MASK) != 0;   // txt:8792
+    s.vbat_otg_low = (reg1f & BQ25792_VBATOTG_LOW_STAT_MASK) != 0;     // txt:9006
+    s.ts_cold = (reg1f & BQ25792_TS_COLD_STAT_MASK) != 0;              // txt:9023
+    s.ts_hot = (reg1f & BQ25792_TS_HOT_STAT_MASK) != 0;                // txt:9071
+    s.vac2_ovp = (reg20 & BQ25792_VAC2_OVP_STAT_MASK) != 0;            // txt:9223
+    s.vac1_ovp = (reg20 & BQ25792_VAC1_OVP_STAT_MASK) != 0;            // txt:9231
+    s.otg_ovp = (reg21 & BQ25792_OTG_OVP_STAT_MASK) != 0;              // txt:9323
+    s.otg_uvp = (reg21 & BQ25792_OTG_UVP_STAT_MASK) != 0;              // txt:9337
+    return s;
+}
+
+bq25792::expected<float> Charger::get_effective_input_current_limit() const {
+    // REG19/1A ICO_ILIM_8:0, 10 mA, bits 15:9 reserved (Table 8-35, txt:8344)
+    uint8_t buffer[2];
+    if (auto r = read_bytes(BQ25792_REG_ICO_CURRENT_LIMIT, buffer, 2); !r) {
+        return std::unexpected(r.error());
+    }
+    const uint16_t code = be16(buffer) & BQ25792_ICO_ILIM_MASK;
+    return static_cast<float>(code * BQ25792_ICO_ILIM_STEP_MA) / 1000.0f;
+}
+
+// =============================================================================
+// Input current / detection policy bits
+// =============================================================================
+
+bq25792::expected<void> Charger::set_ext_ilim_enabled(bool enable) {
+    // REG14 bit 1 EN_EXTILIM (Table 8-30, txt:7882)
+    return update_bits(BQ25792_REG_CHARGER_CONTROL_5, BQ25792_EN_EXTILIM_MASK,
+                       enable ? BQ25792_EN_EXTILIM_MASK : 0);
+}
+
+bq25792::expected<void> Charger::set_ibat_discharge_sense(bool enable) {
+    // REG14 bit 5 EN_IBAT (Table 8-30, txt:7830)
+    return update_bits(BQ25792_REG_CHARGER_CONTROL_5, BQ25792_EN_IBAT_MASK, enable ? BQ25792_EN_IBAT_MASK : 0);
+}
+
+bq25792::expected<void> Charger::set_auto_input_detection(bool enable) {
+    // REG11 bit 6 AUTO_INDET_EN (txt:7365), bit 3 HVDCP_EN (txt:7400). HVDCP needs D+/D-,
+    // so it goes off together with the detection; enabling leaves HVDCP_EN as it is.
+    if (enable) {
+        return update_bits(BQ25792_REG_CHARGER_CONTROL_2, BQ25792_AUTO_INDET_EN_MASK, BQ25792_AUTO_INDET_EN_MASK);
+    }
+    return update_bits(BQ25792_REG_CHARGER_CONTROL_2, BQ25792_AUTO_INDET_EN_MASK | BQ25792_HVDCP_EN_MASK, 0);
+}
+
+bq25792::expected<void> Charger::set_vac1_pulldown(bool enable) {
+    // REG16 bit 2 VAC1_PD_EN (Table 8-32, txt:8047)
+    return update_bits(BQ25792_REG_TEMPERATURE_CONTROL, BQ25792_VAC1_PD_EN_MASK, enable ? BQ25792_VAC1_PD_EN_MASK : 0);
+}
+
+// =============================================================================
+// OTG
+// =============================================================================
+
+bq25792::expected<void> Charger::set_otg_voltage(float voltage) {
+    // REG0B VOTG_10:0: 2800 mV offset, 10 mV/LSB, 2.8-22 V (Table 8-22, txt:6850-6866)
+    if (!(voltage >= 2.8f && voltage <= 22.0f)) {
+        return fail(ErrorCode::InvalidParameter);
+    }
+    const uint32_t code = to_code(voltage * 1000.0f - BQ25792_VOTG_OFFSET_MV, BQ25792_VOTG_STEP_MV);
+    return write_word(BQ25792_REG_VOTG_REGULATION, static_cast<uint16_t>(code & BQ25792_VOTG_MASK));
+}
+
+bq25792::expected<float> Charger::get_otg_voltage() const {
+    uint8_t buffer[2];
+    if (auto r = read_bytes(BQ25792_REG_VOTG_REGULATION, buffer, 2); !r) {
+        return std::unexpected(r.error());
+    }
+    const uint16_t code = be16(buffer) & BQ25792_VOTG_MASK;
+    return static_cast<float>(BQ25792_VOTG_OFFSET_MV + code * BQ25792_VOTG_STEP_MV) / 1000.0f;
+}
+
+bq25792::expected<void> Charger::set_otg_current_limit(float current) {
+    // REG0D IOTG_6:0: 40 mA/LSB, 0.12-3.32 A; bit 7 is PRECHG_TMR (Table 8-23, txt:6909-6935)
+    if (!(current >= 0.12f && current <= 3.32f)) {
+        return fail(ErrorCode::InvalidParameter);
+    }
+    const uint32_t code = to_code(current * 1000.0f, BQ25792_IOTG_STEP_MA);
+    return update_bits(BQ25792_REG_IOTG_REGULATION, BQ25792_IOTG_MASK, static_cast<uint8_t>(code));
+}
+
+bq25792::expected<float> Charger::get_otg_current_limit() const {
+    auto result = read_byte(BQ25792_REG_IOTG_REGULATION);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    return static_cast<float>((*result & BQ25792_IOTG_MASK) * BQ25792_IOTG_STEP_MA) / 1000.0f;
+}
+
+bq25792::expected<void> Charger::set_otg_enabled(bool enable) {
+    // REG12 bit 6 EN_OTG (Table 8-28, txt:7516); DIS_ACDRV and the other bits are kept.
+    return update_bits(BQ25792_REG_CHARGER_CONTROL_3, BQ25792_EN_OTG_MASK, enable ? BQ25792_EN_OTG_MASK : 0);
+}
+
+bq25792::expected<bool> Charger::is_otg_enabled() const {
+    auto result = read_byte(BQ25792_REG_CHARGER_CONTROL_3);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    return (*result & BQ25792_EN_OTG_MASK) != 0;
 }
 
 // =============================================================================
