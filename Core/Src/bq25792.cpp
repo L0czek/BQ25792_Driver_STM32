@@ -621,6 +621,35 @@ bq25792::expected<void> Charger::set_vac1_pulldown(bool enable) {
     return update_bits(BQ25792_REG_TEMPERATURE_CONTROL, BQ25792_VAC1_PD_EN_MASK, enable ? BQ25792_VAC1_PD_EN_MASK : 0);
 }
 
+bq25792::expected<void> Charger::set_vbus_pulldown(bool enable) {
+    // REG16 bit 3 VBUS_PD_EN (Table 8-32)
+    return update_bits(BQ25792_REG_TEMPERATURE_CONTROL, BQ25792_VBUS_PD_EN_MASK, enable ? BQ25792_VBUS_PD_EN_MASK : 0);
+}
+
+// =============================================================================
+// Ship FET
+// =============================================================================
+
+bq25792::expected<void> Charger::set_ship_fet_present(bool present) {
+    // REG14 bit 7 SFET_PRESENT (Table 8-30)
+    return update_bits(BQ25792_REG_CHARGER_CONTROL_5, BQ25792_SFET_PRESENT_MASK, present ? BQ25792_SFET_PRESENT_MASK : 0);
+}
+
+bq25792::expected<void> Charger::set_ship_fet_mode(ShipFetMode mode, bool delayed) {
+    // REG11 bits 2:1 SDRV_CTRL, bit 0 SDRV_DLY (Table 8-27)
+    const uint8_t value = static_cast<uint8_t>((static_cast<uint8_t>(mode) << BQ25792_SDRV_CTRL_SHIFT) & BQ25792_SDRV_CTRL_MASK) |
+                          (delayed ? 0 : BQ25792_SDRV_DLY_MASK);
+    return update_bits(BQ25792_REG_CHARGER_CONTROL_2, BQ25792_SDRV_CTRL_MASK | BQ25792_SDRV_DLY_MASK, value);
+}
+
+bq25792::expected<ShipFetMode> Charger::get_ship_fet_mode() const {
+    auto reg = read_byte(BQ25792_REG_CHARGER_CONTROL_2);
+    if (!reg) {
+        return std::unexpected(reg.error());
+    }
+    return static_cast<ShipFetMode>((*reg & BQ25792_SDRV_CTRL_MASK) >> BQ25792_SDRV_CTRL_SHIFT);
+}
+
 // =============================================================================
 // OTG
 // =============================================================================

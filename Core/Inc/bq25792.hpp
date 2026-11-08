@@ -230,11 +230,15 @@ constexpr uint8_t  BQ25792_PRECHG_TMR_MASK             = 0x80;    // REG0D bit 7
 // Charger Control 2 (REG11, Table 8-27)
 constexpr uint8_t BQ25792_AUTO_INDET_EN_MASK           = 0x40;  // bit 6: D+/D- detection at plug-in (WATCHDOG reset to 1)
 constexpr uint8_t BQ25792_HVDCP_EN_MASK                = 0x08;  // bit 3: HVDCP handshake (REG_RST only)
+constexpr uint8_t BQ25792_SDRV_CTRL_MASK               = 0x06;  // bits 2:1: ship FET control (REG_RST only)
+constexpr uint8_t BQ25792_SDRV_CTRL_SHIFT              = 1;
+constexpr uint8_t BQ25792_SDRV_DLY_MASK                = 0x01;  // bit 0: 1 = act at once, 0 = after 10 s
 
 // Charger Control 3 (REG12, Table 8-28). DIS_ACDRV is defined above.
 constexpr uint8_t BQ25792_EN_OTG_MASK                  = 0x40;  // bit 6: OTG mode (WATCHDOG reset to 0)
 
 // Charger Control 5 (REG14, Table 8-30)
+constexpr uint8_t BQ25792_SFET_PRESENT_MASK            = 0x80;  // bit 7: ship FET fitted (unlocks SDRV_CTRL)
 constexpr uint8_t BQ25792_EN_IBAT_MASK                 = 0x20;  // bit 5: IBAT discharge sensing for the ADC
 constexpr uint8_t BQ25792_EN_IINDPM_MASK               = 0x04;  // bit 2: internal IINDPM regulation
 constexpr uint8_t BQ25792_EN_EXTILIM_MASK              = 0x02;  // bit 1: ILIM_HIZ pin clamp (REG_RST only)
@@ -373,6 +377,16 @@ enum class VbatLowV : uint8_t {
 /**
  * @brief Snapshot of the ADC result registers (one burst read, 0x31-0x3E)
  */
+/**
+ * @brief REG11 SDRV_CTRL: what the ship FET (SDRV) does (datasheet 8.3.12)
+ */
+enum class ShipFetMode : uint8_t {
+    Idle = 0,        // ship FET on (POR)
+    Shutdown = 1,    // ship FET off, I2C off; only an adapter plug-in wakes the chip
+    Ship = 2,        // ship FET off, I2C on; QON low, an adapter or SDRV_CTRL=00 wakes it
+    SystemReset = 3, // ship FET off for ~350 ms, then on again
+};
+
 struct AdcMeasurements {
     float ibus_a;   // signed, + = into charger
     float ibat_a;   // signed, + = charging, - = discharging
@@ -721,6 +735,32 @@ public:
      * About 6.7 W at 20 V: only briefly, never while a source drives VAC1.
      */
     bq25792::expected<void> set_vac1_pulldown(bool enable);
+
+    /**
+     * @brief REG16 VBUS_PD_EN: 6 kOhm VBUS pull-down (REG_RST only)
+     */
+    bq25792::expected<void> set_vbus_pulldown(bool enable);
+
+    // =========================================================================
+    // Ship FET (SDRV, datasheet 8.3.12)
+    // =========================================================================
+
+    /**
+     * @brief REG14 SFET_PRESENT: a ship FET is fitted. While 0 (POR) SDRV_CTRL,
+     *        EN_BATOC and FORCE_SFET_OFF are locked at 0.
+     */
+    bq25792::expected<void> set_ship_fet_present(bool present);
+
+    /**
+     * @brief REG11 SDRV_CTRL + SDRV_DLY in one write
+     *
+     * Shutdown and Ship are refused while VBUS is high (adapter or OTG): the chip puts
+     * SDRV_CTRL back to 00, so read it back with get_ship_fet_mode().
+     *
+     * @param delayed true: the chip acts 10 s after the write (SDRV_DLY=0)
+     */
+    bq25792::expected<void> set_ship_fet_mode(ShipFetMode mode, bool delayed);
+    bq25792::expected<ShipFetMode> get_ship_fet_mode() const;
 
     // =========================================================================
     // OTG (reverse mode from the battery onto VBUS)
