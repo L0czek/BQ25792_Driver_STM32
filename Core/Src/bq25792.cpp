@@ -77,11 +77,13 @@ bq25792::expected<void> Charger::initialize() {
 
     // First write moves the charger from default mode to host mode and starts
     // the watchdog (datasheet 8.4.1).
-    if (auto r = kick_watchdog(); !r) {
-        return r;
+    auto watchdog_result = kick_watchdog();
+    if (!watchdog_result) {
+        return watchdog_result;
     }
-    if (auto r = configure_adc(); !r) {
-        return r;
+    auto adc_result = configure_adc();
+    if (!adc_result) {
+        return adc_result;
     }
 
     initialized_ = true;
@@ -107,8 +109,9 @@ bq25792::expected<void> Charger::reset() {
 
 bq25792::expected<uint8_t> Charger::read_byte(uint8_t reg_addr) const {
     uint8_t data = 0;
-    if (auto r = read_bytes(reg_addr, &data, 1); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(reg_addr, &data, 1);
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     return data;
 }
@@ -186,13 +189,15 @@ bq25792::expected<bool> Charger::is_watchdog_expired() const {
 
 bq25792::expected<void> Charger::configure_adc() {
     // REG2F/REG30: 1 = disable. Enable everything we read; reserved bits are 0.
-    if (auto r = write_byte(BQ25792_REG_ADC_DISABLE_0, 0x00); !r) {
-        return r;
+    auto adc_disable0_result = write_byte(BQ25792_REG_ADC_DISABLE_0, 0x00);
+    if (!adc_disable0_result) {
+        return adc_disable0_result;
     }
     // D+/D- (REG30 bits 7:6, Table 8-57, txt:11279-11289) are not connected on the board:
     // disabling them shortens the continuous scan, so VAC1 (USB-C VBUS) refreshes faster.
-    if (auto r = write_byte(BQ25792_REG_ADC_DISABLE_1, BQ25792_ADC_DISABLE_1_VALUE); !r) {
-        return r;
+    auto adc_disable1_result = write_byte(BQ25792_REG_ADC_DISABLE_1, BQ25792_ADC_DISABLE_1_VALUE);
+    if (!adc_disable1_result) {
+        return adc_disable1_result;
     }
     // Continuous conversion, 14-bit (12 ms per channel), no averaging.
     return update_bits(BQ25792_REG_ADC_CONTROL,
@@ -204,8 +209,9 @@ bq25792::expected<void> Charger::configure_adc() {
 bq25792::expected<AdcMeasurements> Charger::get_adc_measurements() const {
     // 0x31 IBUS, 0x33 IBAT, 0x35 VBUS, 0x37 VAC1, 0x39 VAC2, 0x3B VBAT, 0x3D VSYS
     uint8_t buf[14];
-    if (auto r = read_bytes(BQ25792_REG_IBUS_ADC, buf, sizeof(buf)); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_IBUS_ADC, buf, sizeof(buf));
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     AdcMeasurements m{};
     m.ibus_a = signed_ma_to_a(&buf[0]);
@@ -245,8 +251,9 @@ bq25792::expected<void> Charger::set_vsys_min(float voltage) {
 
 bq25792::expected<float> Charger::get_charge_voltage_limit() const {
     uint8_t buffer[2];
-    if (auto r = read_bytes(BQ25792_REG_CHARGE_VOLTAGE_LIMIT, buffer, 2); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_CHARGE_VOLTAGE_LIMIT, buffer, 2);
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     const uint16_t code = be16(buffer) & BQ25792_CHARGE_VOLTAGE_LIMIT_MASK;  // 11 bits, 10 mV
     return static_cast<float>(code) / 100.0f;
@@ -262,8 +269,9 @@ bq25792::expected<void> Charger::set_charge_voltage_limit(float voltage) {
 
 bq25792::expected<float> Charger::get_charge_current_limit() const {
     uint8_t buffer[2];
-    if (auto r = read_bytes(BQ25792_REG_CHARGE_CURRENT_LIMIT, buffer, 2); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_CHARGE_CURRENT_LIMIT, buffer, 2);
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     const uint16_t code = be16(buffer) & BQ25792_CHARGE_CURRENT_LIMIT_MASK;  // 9 bits, 10 mA
     return static_cast<float>(code) / 100.0f;
@@ -295,8 +303,9 @@ bq25792::expected<void> Charger::set_input_voltage_limit(float voltage) {
 
 bq25792::expected<float> Charger::get_input_current_limit() const {
     uint8_t buffer[2];
-    if (auto r = read_bytes(BQ25792_REG_INPUT_CURRENT_LIMIT, buffer, 2); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_INPUT_CURRENT_LIMIT, buffer, 2);
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     const uint16_t code = be16(buffer) & BQ25792_INPUT_CURRENT_LIMIT_MASK;  // 9 bits, 10 mA
     return static_cast<float>(code) / 100.0f;
@@ -370,8 +379,9 @@ bq25792::expected<bool> Charger::is_battery_present() const {
 
 bq25792::expected<bool> Charger::is_fault_present() const {
     uint8_t fault[2];
-    if (auto r = read_bytes(BQ25792_REG_FAULT_STATUS_0, fault, 2); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_FAULT_STATUS_0, fault, 2);
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     return (fault[0] & BQ25792_FAULT0_MASK) != 0 || (fault[1] & BQ25792_FAULT1_MASK) != 0;
 }
@@ -394,40 +404,45 @@ bq25792::expected<void> Charger::set_enabled(bool enable) {
 
 bq25792::expected<float> Charger::get_vbat() const {
     uint8_t buffer[2];
-    if (auto r = read_bytes(BQ25792_REG_VBAT_ADC, buffer, 2); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_VBAT_ADC, buffer, 2);
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     return mv_to_v(buffer);
 }
 
 bq25792::expected<float> Charger::get_ibus() const {
     uint8_t buffer[2];
-    if (auto r = read_bytes(BQ25792_REG_IBUS_ADC, buffer, 2); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_IBUS_ADC, buffer, 2);
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     return signed_ma_to_a(buffer);
 }
 
 bq25792::expected<float> Charger::get_vbus() const {
     uint8_t buffer[2];
-    if (auto r = read_bytes(BQ25792_REG_VBUS_ADC, buffer, 2); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_VBUS_ADC, buffer, 2);
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     return mv_to_v(buffer);
 }
 
 bq25792::expected<float> Charger::get_vsys() const {
     uint8_t buffer[2];
-    if (auto r = read_bytes(BQ25792_REG_VSYS_ADC, buffer, 2); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_VSYS_ADC, buffer, 2);
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     return mv_to_v(buffer);
 }
 
 bq25792::expected<float> Charger::get_ibat() const {
     uint8_t buffer[2];
-    if (auto r = read_bytes(BQ25792_REG_IBAT_ADC, buffer, 2); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_IBAT_ADC, buffer, 2);
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     return signed_ma_to_a(buffer);
 }
@@ -476,8 +491,9 @@ bq25792::expected<void> Charger::set_input_source(ChargerInputSource source) con
     }
 
     // DIS_ACDRV=0 allows the mux to turn a path on.
-    if (auto r = update_bits(BQ25792_REG_CHARGER_CONTROL_3, BQ25792_DIS_ACDRV_MASK, 0); !r) {
-        return r;
+    auto update_result = update_bits(BQ25792_REG_CHARGER_CONTROL_3, BQ25792_DIS_ACDRV_MASK, 0);
+    if (!update_result) {
+        return update_result;
     }
     if (source == ChargerInputSource::AUTO) {
         // Leave EN_ACDRV1/2 to the charger: it enables the first valid input and fails over.
@@ -517,8 +533,9 @@ bq25792::expected<InputStatus> Charger::get_input_status() const {
 bq25792::expected<InputVoltages> Charger::get_input_voltages() const {
     // 0x37 VAC1, 0x39 VAC2, 0x3B VBAT: 16-bit big-endian, 1 mV (txt:11575, 11641, 11708)
     uint8_t buf[6];
-    if (auto r = read_bytes(BQ25792_REG_VAC1_ADC, buf, sizeof(buf)); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_VAC1_ADC, buf, sizeof(buf));
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     InputVoltages v{};
     v.vac1_mv = be16(&buf[0]);
@@ -529,8 +546,9 @@ bq25792::expected<InputVoltages> Charger::get_input_voltages() const {
 
 bq25792::expected<MuxState> Charger::get_mux_state() const {
     uint8_t buf[2];  // REG12, REG13
-    if (auto r = read_bytes(BQ25792_REG_CHARGER_CONTROL_3, buf, sizeof(buf)); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_CHARGER_CONTROL_3, buf, sizeof(buf));
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     MuxState m{};
     m.dis_acdrv = (buf[0] & BQ25792_DIS_ACDRV_MASK) != 0;   // txt:7507
@@ -543,8 +561,9 @@ bq25792::expected<MuxState> Charger::get_mux_state() const {
 bq25792::expected<BatteryOtgStatus> Charger::get_battery_otg_status() const {
     // REG1D..REG21 only: REG22-REG27 are clear-on-read flags owned by other readers.
     uint8_t buf[5];
-    if (auto r = read_bytes(BQ25792_REG_CHARGER_STATUS_2, buf, sizeof(buf)); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_CHARGER_STATUS_2, buf, sizeof(buf));
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     const uint8_t reg1d = buf[0];
     const uint8_t reg1f = buf[2];
@@ -565,8 +584,9 @@ bq25792::expected<BatteryOtgStatus> Charger::get_battery_otg_status() const {
 bq25792::expected<float> Charger::get_effective_input_current_limit() const {
     // REG19/1A ICO_ILIM_8:0, 10 mA, bits 15:9 reserved (Table 8-35, txt:8344)
     uint8_t buffer[2];
-    if (auto r = read_bytes(BQ25792_REG_ICO_CURRENT_LIMIT, buffer, 2); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_ICO_CURRENT_LIMIT, buffer, 2);
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     const uint16_t code = be16(buffer) & BQ25792_ICO_ILIM_MASK;
     return static_cast<float>(code * BQ25792_ICO_ILIM_STEP_MA) / 1000.0f;
@@ -616,8 +636,9 @@ bq25792::expected<void> Charger::set_otg_voltage(float voltage) {
 
 bq25792::expected<float> Charger::get_otg_voltage() const {
     uint8_t buffer[2];
-    if (auto r = read_bytes(BQ25792_REG_VOTG_REGULATION, buffer, 2); !r) {
-        return std::unexpected(r.error());
+    auto read_result = read_bytes(BQ25792_REG_VOTG_REGULATION, buffer, 2);
+    if (!read_result) {
+        return std::unexpected(read_result.error());
     }
     const uint16_t code = be16(buffer) & BQ25792_VOTG_MASK;
     return static_cast<float>(BQ25792_VOTG_OFFSET_MV + code * BQ25792_VOTG_STEP_MV) / 1000.0f;
